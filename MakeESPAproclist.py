@@ -1,3 +1,12 @@
+#!/usr/bin/env python
+# By Guy Serbin, Environment, Soils, and Land Use Dept., CELUP, Teagasc,
+# Johnstown Castle, Co. Wexford Y35 TC97, Ireland
+# email: guy <dot> serbin <at> teagasc <dot> ie
+
+# version 1.1.0
+
+# This script creates Landsat scene processing lists for USGS/EROS/ESPA (https://espa.cr.usgs.gov)
+
 import os, sys, glob, datetime, argparse, ieo
 from osgeo import ogr, osr
 
@@ -14,7 +23,7 @@ parser.add_argument('--startyear', type = int, help = 'Starting year')
 parser.add_argument('--endyear', type = int, help = 'Ending year. If less than starting starting year then these will be swapped.')
 parser.add_argument('--landsat', type = int, help = 'Landsat number (4, 5, 7, or 8 only).')
 parser.add_argument('--sensor', type = str, help = 'Landsat sensor: TM, ETM, ETM_SLC_OFF, OLI, OLI_TIRS, TIRS')
-parser.add_argument('--shp', type = str, default = os.path.join(ieo.catdir, 'WRS2_Ireland_scenes.shp'), help = 'Full path and filename of alternative shapefile.')
+parser.add_argument('--shp', type = str, default = ieo.landsatshp, help = 'Full path and filename of alternative shapefile.')
 parser.add_argument('-o', '--outdir', type = str, default = os.path.join(ieo.catdir, 'LEDAPS_processing_lists'), help = 'Output directory')
 parser.add_argument('--ignorelocal', type = bool, default = False, help = 'Ignore presence of local scenes.')
 parser.add_argument('--srdir', type = str, default = ieo.srdir, help = 'Local SR scene directory')
@@ -67,7 +76,7 @@ if args.enddate:
 if args.usesrdir:
     dirs = [args.srdir, os.path.join(args.srdir,'L1G')]
     for d in dirs:
-        flist = glob.glob(os.path.join(d,'L*_ref_ITM.dat'))
+        flist = glob.glob(os.path.join(d,'L*_ref_{}.dat'.format(ieo.projacronym)))
         if len(flist) > 0:
             for f in flist:
                 if os.path.isfile(f):
