@@ -3,22 +3,75 @@
 # Johnstown Castle, Co. Wexford Y35 TC97, Ireland
 # email: guy <dot> serbin <at> teagasc <dot> ie
 
-# version 1.0.0
+# version 1.1.0
 
 # This script will create and update a shapefile of all available Landsat TM/ETM+/OLI-TIRS scenes, including available metadata
 
-import os, sys, urllib.request, urllib.error, datetime, shutil, ieo
+import os, sys, urllib.error, datetime, shutil, ieo
 from osgeo import ogr, osr
 import xml.etree.ElementTree as ET
 from PIL import Image
 
-xmls = ['metadata21.xml', 'metadata22_24.xml']
+if sys.version_info[0] == 2:
+    import ConfigParser as configparser
+    from urllib import urlretrieve
+    from urllib2 import urlopen, URLError
+else:
+    import configparser
+    from urllib.request import urlopen, urlretrieve
+    from urllib.error import URLError
+
+global pathrows
+
+config = configparser.ConfigParser()
+config_location = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'updateshp.ini')
+
+config.read(config_location) # config_path
+pathrowvals = config['DEFAULT']['pathrowvals'] # this is a comma-delimited string containing multiples of four values: start path, end path, start row, end row. It is designed to query rectangular path/row combinations, in order to avoid scenes that don't touch landmasses or are not of interest. 
+useWRS2 = config['DEFAULT']['useWRS2'] # Setting this parameter to "Yes" in updateshp.ini will query WRS-2 Path/ Row field values from ieo.WRS2, and may result in a great increase in the number of queries to USGS servers
+
+pathrows = []
+subpathrow = []
+xmls = []
+
+if useWRS2.lower() == 'yes':
+    gdb, wrs = os.path.split(ieo.WRS2)
+    driver = ogr.GetDriverByName("FileGDB")
+    ds = driver.Open(gdb, 0)
+    layer = ds.Getlayer(wrs)
+    for feature in layer:
+        path = feature.GetField('PATH')
+        row = feature.GetField('ROW')
+        pathrows.append([path, path, row, row])
+        xmls.append('Metadata_{}{:03d}.xml'.format(path, row))
+    ds = None
+else:
+    pathrowvals = pathrowvals.split(',')
+    numxmls = len(pathrowvals) / 4
+    xmlnum = 1
+    i = 0
+    if numxmls > 0:
+        while xmlnum <= numxmls:
+            subpathrow.append(int(pathrowvals[i]))
+            i += 1
+            if i % 4 == 0:
+                xmls.append('Metadata_{}.xml'.format(xmlnum))
+                pathrows.append(subpathrow)
+                subpathrow = []
+                xmlnum += 1
+    else:
+        print('Error: there are no values for WRS Paths/Rows in updateshp.ini, or the file is missing. Returning.')
+        sys.exit()
+    
+
+#xmls = ['metadata21.xml', 'metadata22_24.xml']
 ingestdir = os.path.join(ieo.ingestdir, 'Metadata')
-dirname = ieo.catdir
+dirname = os.path.join(ieo.catdir, 'Landsat')
 logdir = ieo.logdir
-jpgdir = os.path.join(ieo.catdir, 'Thumbnails')
+jpgdir = os.path.join(ieo.catdir, 'Landsat', 'Thumbnails')
 itmdir = ieo.srdir
-shapefile = os.path.join(ieo.catdir, 'WRS2_Ireland_scenes.shp')
+shapefile = ieo.landsatshp
+layername = os.path.basename(shapefile)[:-4] # assumes a shapefile ending in '.shp'
 addfields = ['Thumb_JPG', 'LEDAPS' ]
 errorlist = []
 scenelist = []
@@ -28,9 +81,8 @@ enddate = today.strftime('%Y-%m-%d')
 
 errorfile = os.path.join(logdir, 'Landsat_inventory_download_errors.csv')
 
-def dlxmls(startdate,enddate,xmls,ingestdir): # This downloads queried XML files
-    errorval = []
-    pathrows = [[207, 208, 21, 21],[205, 209, 22, 24]]
+def dlxmls(startdate, enddate, xmls, ingestdir): # This downloads queried XML files
+    #pathrows = [[207, 208, 21, 21],[205, 209, 22, 24]]
     tries = 1
     downloaded = False
     for x, p in zip(xmls, pathrows):
@@ -46,10 +98,10 @@ def dlxmls(startdate,enddate,xmls,ingestdir): # This downloads queried XML files
         while not downloaded and tries < 6: 
             print('Download attempt %d of 5.'%tries)
             try: 
-                url = urllib.request.urlopen(urlname)
-                urllib.request.urlretrieve(urlname, xml) # filename=xml
+#                url = urllib.request.urlopen(urlname)
+                urlretrieve(urlname, xml) # filename=xml
                 downloaded = True
-            except urllib.error.URLError as e:
+            except URLError as e:
                 print(e.reason)
                 ieo.logerror(urlname, e.reason, errorfile = errorfile)
                 tries += 1
@@ -61,7 +113,6 @@ def dlxmls(startdate,enddate,xmls,ingestdir): # This downloads queried XML files
 
 
 def dlthumb(url, jpgdir): # This downloads thumbnails from the USGS 
-    errorval = []
     basename = os.path.basename(url)
     f = os.path.join(jpgdir, basename)
     tries = 1
@@ -70,8 +121,8 @@ def dlthumb(url, jpgdir): # This downloads thumbnails from the USGS
     while not downloaded and tries < 6: 
         print('Download attempt %d of 5.'%tries)
         try: 
-            url = urllib.request.urlopen(dlurl)
-            urllib.request.urlretrieve(dlurl, filename = f)
+            url = urlopen(dlurl)
+            urlretrieve(dlurl, filename = f)
             if url.length == os.stat(f).st_size:
                 downloaded = True
             else:
@@ -119,7 +170,7 @@ def makeworldfile(jpg, geom): # This attempts to make a worldfile for thumbnails
         F = maxY
     jpw = jpg.replace('.jpg', '.jpw')
     if os.access(jpw, os.F_OK):
-        bak = jpw.replace('.jpw', '.jpw.%s.bak'%todaystr)
+        bak = jpw.replace('.jpw', '.jpw.%s.bak'%today.strftime('%Y%m%d-%H%M%S'))
         shutil.move(jpw, bak)
     with open(jpw, 'w') as file:
         file.write('%f\n-%f\n-%f\n-%f\n%f\n%f\n'%(A, D, B, E, C, F))
@@ -143,7 +194,8 @@ source = osr.SpatialReference() # Lat/Lon WGS-64
 source.ImportFromEPSG(4326)
 
 target = osr.SpatialReference()
-target.ImportFromEPSG(2157) # Irish Transverse Mercator ERTS-89
+i = ie.prj.find(':') + 1
+target.ImportFromEPSG(int(ieo.prj[i:])) # EPSG code set in ieo.ini
 
 transform = osr.CoordinateTransformation(source, target)
 
@@ -160,7 +212,7 @@ if not os.access(shapefile, os.F_OK):
     # Create Shapefile
     
     data_source = driver.CreateDataSource(shapefile)
-    layer = data_source.CreateLayer("WRS2_Ireland_scenes", target, ogr.wkbPolygon)
+    layer = data_source.CreateLayer(layername, target, ogr.wkbPolygon)
     field_name = ogr.FieldDefn(fnames[0], ogr.OFTString)
     field_name.SetWidth(21)
     layer.CreateField(field_name)
@@ -270,7 +322,7 @@ for xml in xmls:
                         feature.SetField(fnames[m], root[i][k].text)
                 basename = os.path.basename(dlurl)
                 jpg = os.path.join(jpgdir, basename)
-                itm = os.path.join(itmdir, '%s_ref_ITM.dat'%sceneID)
+                itm = os.path.join(itmdir, '{}_ref_{}.dat'.format(sceneID, ieo.projacronym))
                 if not os.access(jpg, os.F_OK):
                     try:
                         response = dlthumb(dlurl, jpgdir)
@@ -286,9 +338,9 @@ for xml in xmls:
                         else:
                             print('Error with sceneID or filename, adding to error list.')
                             ieo.logerror(sceneID, response, errorfile = errorfile)
-                        if os.access(jpg,os.F_OK):
+                        if os.access(jpg, os.F_OK):
                             feature.SetField('Thumb_JPG', jpg)
-                        if os.access(itm,os.F_OK):
+                        if os.access(itm, os.F_OK):
                             feature.SetField('LEDAPS', itm)
                         layer.SetFeature(feature)
                     except Exception as e:
@@ -302,7 +354,7 @@ for xml in xmls:
                 poly = ogr.Geometry(ogr.wkbPolygon)
                 
                 poly.AddGeometry(ring)  
-                poly.Transform(transform)   # Convert to ITM
+                poly.Transform(transform)   # Convert to local projection
                 feature.SetGeometry(poly)  
                 layer.CreateFeature(feature)
                 print('\n')
@@ -319,14 +371,14 @@ for field in addfields: #Add any missing fields
         layer.CreateField(new_field)
 for feature in layer:
     sceneID = feature.GetField("sceneID")
-    itm = os.path.join(itmdir, '%s_ref_ITM.dat'%sceneID)
+    itm = os.path.join(itmdir, '{}_ref_{}.dat'.format(sceneID, ieo.projacronym))
     dlurl = feature.GetField("browseURL")
     print('Processing scene %s.'%sceneID)
     basename = os.path.basename(dlurl)
     jpg = os.path.join(jpgdir,basename)
-    for x,y in zip(addfields, [jpg, itm]):
+    for x, y in zip(addfields, [jpg, itm]):
         if os.access(y, os.F_OK) and y != feature.GetField(x):
-            print('Updating metadata for sceneID %s, field %s: %s'%(sceneID, x, y))
+            print('Updating metadata for sceneID {}, field {}: {}'.format(sceneID, x, y))
             feature.SetField(x, y)
             layer.SetFeature(feature)
 
