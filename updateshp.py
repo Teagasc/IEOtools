@@ -10,7 +10,7 @@
 import os, sys, urllib.error, datetime, shutil, ieo
 from osgeo import ogr, osr
 import xml.etree.ElementTree as ET
-from PIL import Image
+from pillow import Image
 
 if sys.version_info[0] == 2:
     import ConfigParser as configparser
