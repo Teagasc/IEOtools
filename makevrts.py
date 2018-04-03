@@ -3,7 +3,7 @@
 # Johnstown Castle, Co. Wexford Y35 TC97, Ireland
 # email: guy <dot> serbin <at> teagasc <dot> ie
 
-# version 1.1.0
+# version 1.1.1
 
 # This script creates VRTs from ingested Landsat data and catalogue files
 
@@ -17,14 +17,16 @@ parser.add_argument('-o', '--outdir', type = str, default = None, help = 'Data o
 parser.add_argument('-y', '--year', type = int, default = None, help = 'Process secenes only for a specific year.')
 parser.add_argument('--overwrite', action = "store_true", help = 'Overwrite existing files.')
 parser.add_argument('--nodataval', type = int, default = None, help = 'No data value. This must be set if --indir is also set.')
+parser.add_argument('--minrow', type = int, default = 21, help = 'Lowest WRS-2 Row number.')
+parser.add_argument('--rowspath', type = int, default = 4, help = 'Max WRS-2 Rows per Path.')
 args = parser.parse_args()
 
 if args.indir:
     indirs = [args.indir]
     nodatavals = {args.indir: args.nodataval}
 else:
-    indirs = [ieo.srdir, ieo.fmaskdir, ieo.btdir, ieo.ndvidir, ieo.evidir]
-    nodatavals ={ieo.srdir: '-9999', ieo.fmaskdir: '255', ieo.btdir: '-9999', ieo.ndvidir: '0', ieo.evidir: '0'}
+    indirs = [ieo.srdir, ieo.fmaskdir, ieo.btdir, ieo.ndvidir, ieo.evidir, ieo.pixelqadir]
+    nodatavals = {ieo.srdir: '-9999', ieo.fmaskdir: '255', ieo.btdir: '-9999', ieo.ndvidir: '0', ieo.evidir: '0', ieo.pixelqadir: '1'}
 
 def makefiledict(dirname, year):
     if args.year:
@@ -33,42 +35,57 @@ def makefiledict(dirname, year):
         flist = glob.glob(os.path.join(dirname, 'L*.dat'))
     filedict = {}
     if len(flist) >= 2:
-        if len(flist) == 2 and os.path.basename(flist[0])[6:9] == os.path.basename(flist[1])[6:9]:
+        if len(os.path.basename(flist[0])) > 40:
+            rangerow = [7, 10, 17]
+        else:
+            rangerow = [6, 9, 16]
+        if len(flist) == 2 and os.path.basename(flist[0])[rangerow[0]:rangerow[1]] == os.path.basename(flist[1])[rangerow[0]:rangerow[1]]:
             filedict = None
             return filedict
         for f in flist:
             basename = os.path.basename(f)
             if not basename[9:16] in filedict.keys():
-                filedict[basename[9:16]] = [f]
-            elif not f in filedict[basename[9:16]]:
-                filedict[basename[9:16]].append(f)
+                filedict[basename[rangerow[1]:rangerow[2]]] = [f]
+            elif not f in filedict[basename[rangerow[1]:rangerow[2]]]:
+                filedict[basename[rangerow[1]:rangerow[2]]].append(f)
     return filedict
 
 def makevrtfilename(outdir, filelist):
     numscenes = len(filelist)
     basename = os.path.basename(filelist[0]).replace('.dat', '.vrt')
-    startrow = basename[8:9]
-    endrow = os.path.basename(filelist[-1])[8:9]
-    outbasename = '{}{}{}{}{}'.format(basename[:6], numscenes, startrow, endrow, basename[9:])
+    if len(basename) < 40:
+        startrow = basename[8:9]
+        endrow = os.path.basename(filelist[-1])[8:9]
+        outbasename = '{}{}{}{}{}'.format(basename[:6], numscenes, startrow, endrow, basename[9:])
+    else:
+        startrow = basename[9:10]
+        endrow = os.path.basename(filelist[-1])[9:10]
+        outbasename = '{}{}{}{}{}'.format(basename[:7], numscenes, startrow, endrow, basename[10:])
     vrtfilename = os.path.join(outdir, outbasename)
     return vrtfilename
 
 def writetocsv(catfile, vrt, filelist, d):
     datetuple = datetime.datetime.strptime(d, '%Y%j')
-    scenelist = ['None'] * 4
+    scenelist = ['None'] * args.rowspath
     for f in filelist:
-        sceneID = os.path.basename(f)[:21]
-        i = int(sceneID[7:9]) - 21
+        if len(f) < 40:
+            sceneID = os.path.basename(f)[:21]
+            i = int(sceneID[7:9]) - args.minrow
+            path = sceneID[3:6]
+        else:
+            sceneID = os.path.basename(f)[:40]
+            i = int(sceneID[8:10]) - args.minrow
+            path = sceneID[4:7]
         scenelist[i] = sceneID
     header = 'Date,Year,DOY,Path,R021,R022,R023,R024,VRT'    
     if not os.path.isfile(catfile): # creates catalog file if missing
         with open(catfile, 'w') as output:
-            output.write('%s\n'%header)    
-    outline = '%s,%s,%s,%s'%(datetuple.strftime('%Y-%m-%d'), datetuple.strftime('%Y'), datetuple.strftime('%j'), scenelist[0][3:6])
+            output.write('{}\n'.format(header))    
+    outline = '{},{},{},{}'.format(datetuple.strftime('%Y-%m-%d'), datetuple.strftime('%Y'), datetuple.strftime('%j'), path)
     for s in scenelist:
-        outline += ',%s'%s
-    with open(catfile,'a') as output:
-        output.write('%s\n'%outline)
+        outline += ',{}'.format(s)
+    with open(catfile, 'a') as output:
+        output.write('{}\n'.format(outline))
     
 def makevrt(filelist, catfile, vrt, datetuple):
     dirname, basename = os.path.split(vrt)
@@ -113,5 +130,4 @@ for indir in indirs:
             else:
                 print('An insufficient number of scenes for dat {} exist, skipping.'.format(key))
         
-
 print('Processing complete.')
