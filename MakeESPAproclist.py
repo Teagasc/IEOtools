@@ -3,18 +3,22 @@
 # Johnstown Castle, Co. Wexford Y35 TC97, Ireland
 # email: guy <dot> serbin <at> teagasc <dot> ie
 
-# version 1.1.0
+# version 1.1.1
 
 # This script creates Landsat scene processing lists for USGS/EROS/ESPA (https://espa.cr.usgs.gov)
 
 import os, sys, glob, datetime, argparse, ieo
 from osgeo import ogr, osr
 
+global proclevels, pathrowdict
+
 # Parse command line arguments
 parser = argparse.ArgumentParser('Create ESPA LEDAPS process list for missing scenes.')
 parser.add_argument('--path', type = int, help = 'WRS-2 Path')
 parser.add_argument('--row', type = int, help = 'WRS-2 Row. If this is specified, then --path must also be specified.')
-parser.add_argument('--maxcc', default = 100.0, type = float, help = 'Maximum cloud cover in percent')
+parser.add_argument('--maxcc', default = 100, type = int, help = 'Maximum cloud cover in percent')
+parser.add_argument('--maxccland', default = 30, type = int, help = 'Maximum cloud cover over land in percent')
+parser.add_argument('--ccland', default = True, type = bool, help = 'Use land cloud cover, not full scene (Default = True)')
 parser.add_argument('--startdate', type = str, help = 'Starting date, DD/MM/YYYY')
 parser.add_argument('--enddate', type = str, help = 'Ending date, DD/MM/YYYY')
 parser.add_argument('--startdoy', type = int, help = 'Starting day of year, 1-366')
@@ -24,15 +28,15 @@ parser.add_argument('--endyear', type = int, help = 'Ending year. If less than s
 parser.add_argument('--landsat', type = int, help = 'Landsat number (4, 5, 7, or 8 only).')
 parser.add_argument('--sensor', type = str, help = 'Landsat sensor: TM, ETM, ETM_SLC_OFF, OLI, OLI_TIRS, TIRS')
 parser.add_argument('--shp', type = str, default = ieo.landsatshp, help = 'Full path and filename of alternative shapefile.')
-parser.add_argument('-o', '--outdir', type = str, default = os.path.join(ieo.catdir, 'LEDAPS_processing_lists'), help = 'Output directory')
+parser.add_argument('-o', '--outdir', type = str, default = os.path.join(ieo.catdir, 'Landsat', 'LEDAPS_processing_lists'), help = 'Output directory')
 parser.add_argument('--ignorelocal', type = bool, default = False, help = 'Ignore presence of local scenes.')
 parser.add_argument('--srdir', type = str, default = ieo.srdir, help = 'Local SR scene directory')
 parser.add_argument('--usesrdir', type = bool, default = True, help = 'Use local index of scenes rather than shapefile stored data')
 parser.add_argument('--allinpath', type = bool, default = True, help = 'Include missing scenes in path, even if they are too cloudy.')
 parser.add_argument('--minsunel', type = float, default = 15.0, help = 'Sun elevation beneath which scenes will be ignored.')
 parser.add_argument('--separate', type = bool, default = False, help = 'Separate output files for Landsats 4-7 and 8.')
-parser.add_argument('--L1G', type = bool, default = False, help = 'Also get L1G and L1GT scenes.')
-parser.add_argument('--L1GT', type = bool, default = False, help = 'Also get L1GT scenes but exclude L1G.')
+parser.add_argument('--L1GS', type = bool, default = False, help = 'Also get L1GS and L1GT scenes.')
+parser.add_argument('--L1GT', type = bool, default = False, help = 'Also get L1GT scenes but exclude L1GS.')
 parser.add_argument('--ALL', type = bool, default = False, help = 'Get any scene regardless of processing level.')
 args = parser.parse_args()
 
@@ -45,7 +49,7 @@ localscenelist = []
 
 if args.sensor:
     if 'TM' in args.sensor:
-        sensor='LANDSAT_%s'%args.sensor
+        sensor='LANDSAT_{}'.format(args.sensor)
     elif not ('OLI' in args.sensor or 'TIRS' in args.sensor):
         print('Error: this sensor is not supported. Acceptable sensors are: TM, ETM, ETM_SLC_OFF, OLI, OLI_TIRS, TIRS. Leaving --sensor blank will search for all sensors. Exiting.')
         exit()
@@ -80,24 +84,25 @@ if args.usesrdir:
         if len(flist) > 0:
             for f in flist:
                 if os.path.isfile(f):
-                    localscenelist.append(os.path.basename(f)[:21])
+                    localscenelist.append(os.path.basename(f)[:16])
 
-proclevels = ['L1T']
-if args.L1G:
-    proclevels = ['L1T', 'L1GT', 'L1Gt', 'L1G']
+proclevels = ['L1TP']
+if args.L1GS:
+    proclevels = ['L1TP', 'L1GT', 'L1GS']
 elif args.L1GT:
-    proclevels = ['L1T', 'L1GT', 'L1Gt']
+    proclevels = ['L1TP', 'L1GT']
 elif args.ALL:
-    proclevels = ['L1T', 'L1GT', 'L1Gt', 'L1G', 'PR']
+    proclevels = ['L1TP', 'L1GT', 'L1GS']
 
 def getscenedata(layer, localscenelist):
     scenedata = {}
     for feature in layer:
         sceneID = feature.GetField("sceneID")
+        ProductID = feature.GetField("LandsatPID")
         includescene = True
         sunEl = feature.GetField("sunEl")
         sensor = feature.GetField("sensor")
-        acqDate = datetime.datetime.strptime(feature.GetField("acqDate"),'%Y/%m/%d')
+        acqDate = datetime.datetime.strptime(feature.GetField("acqDate"), '%Y/%m/%d')
         datestr = acqDate.strftime('%Y%j')
         proclevel = feature.GetField("DT_L1")
         if sceneID[2:3] == '8' and ((datestr in L8exclude) or (sensor != 'OLI_TIRS')):
@@ -106,26 +111,34 @@ def getscenedata(layer, localscenelist):
             includescene = False
         if includescene and sunEl >= args.minsunel:
             LEDAPS = feature.GetField("LEDAPS")
-            scenedata[sceneID] = [acqDate, feature.GetField("path"), feature.GetField("row"), sensor, feature.GetField("CCFull"), sunEl, LEDAPS, proclevel]
+            scenedata[sceneID] = {'LandsatPID': ProductID,
+                                    'acqDate':acqDate, 
+                                    'Path': feature.GetField("path"), 
+                                    'Row': feature.GetField("row"), 
+                                    'Sensor': sensor,  
+                                    'CCFull': feature.GetField("CCFull"), 
+                                    'CCLand': feature.GetField("CCLand"),
+                                    'sunEl': sunEl, 
+                                    'LEDAPS': LEDAPS, 
+                                    'proclevel': proclevel}
             if LEDAPS and not args.usesrdir:
                 if os.path.isfile(LEDAPS):
-                    localscenelist.append(os.path.basename(LEDAPS))
+                    localscenelist.append(os.path.basename(LEDAPS)[:16])
     return scenedata, localscenelist
 
-def scenesearch(scenedata, sceneID):
+def scenesearch(scenedata, sceneID, pathrowdict): # This function is still Ireland specific
     keys = scenedata.keys()
     scout = []
-    path = scenedata[sceneID][1]
-    if path == 207 or path == 208:
-        r = 21
-    else:
-        r = 22
-    if scenedata[sceneID][6]:
-        if os.path.exists(scenedata[sceneID][6]):
-            row = scenedata[sceneID][2]
-            while r < 25:
-                if r != row:
-                    s = '%s%03d%s' % (sceneID[:6],r,sceneID[9:16])
+    r = min(pathrowdict[scenedata[sceneID]['Path']])
+#    if scenedata[sceneID]['Path'] == 207 or scenedata[sceneID]['Path'] == 208:
+#        r = 21
+#    else:
+#        r = 22
+    if scenedata[sceneID]['LEDAPS']:
+        if os.path.exists(scenedata[sceneID]['LEDAPS']):
+            while r <= max(pathrowdict[scenedata[sceneID]['Path']]):
+                if r != scenedata[sceneID]['Row']:
+                    s = '{}{:03d}{}'.format(sceneID[:6], r, sceneID[9:16])
                     sc = [y for y in keys if s in y]
                     for s in sc:
                         if not s in scout:
@@ -136,15 +149,15 @@ def scenesearch(scenedata, sceneID):
 def findmissing(l8, l47, scenedata, localscenelist):
     keys = scenedata.keys()
     for sceneID in keys:
-        if not sceneID in localscenelist:
+        if not sceneID[:16] in localscenelist:
             if sceneID[2:3] == '8' and not any(sceneID in l8[key] for key in l8.keys()):
-                print('Adding %s to Landsat 8 processing list.'%sceneID)
+                print('Adding {} to Landsat 8 processing list.'.format(sceneID))
                 if not sceneID[9:16] in l8.keys():
                     l8[sceneID[9:16]] = [sceneID]
                 else:
                     l8[sceneID[9:16]].append(sceneID)
             elif sceneID[2:3] != '8' and not any(sceneID in l47[key] for key in l47.keys()):
-                print('Adding %s to Landsat 4-7 processing list.'%sceneID)
+                print('Adding {} to Landsat 4-7 processing list.'.format(sceneID))
                 if not sceneID[9:16] in l47.keys():
                     l47[sceneID[9:16]] = [sceneID]
                 else:
@@ -163,16 +176,21 @@ def findmissing(l8, l47, scenedata, localscenelist):
 
 def populatelists(l8, l47, scenedata, localscenelist):
     for sceneID in scenedata.keys():
-        acqDate = scenedata[sceneID][0]
-        path = scenedata[sceneID][1]
-        row = scenedata[sceneID][2]
-        scenesensor = scenedata[sceneID][3]
-        cc = scenedata[sceneID][4]
-        sunEl = scenedata[sceneID][5]
-        SR = scenedata[sceneID][6]
-        proclevel = scenedata[sceneID][7]
+        acqDate = scenedata[sceneID]['acqDate']
+        path = scenedata[sceneID]['Path']
+        row = scenedata[sceneID]['Row']
+        scenesensor = scenedata[sceneID]['Sensor']
+        if args.ccland:
+            cc = scenedata[sceneID]['CCLand']
+            maxcc = args.maxccland
+        else:
+            cc = scenedata[sceneID]['CCFull']
+            maxcc = args.maxcc
+        sunEl = scenedata[sceneID]['sunEl']
+        SR = scenedata[sceneID]['LEDAPS']
+        proclevel = scenedata[sceneID]['proclevel']
         
-        if (not sceneID in localscenelist or args.ignorelocal) and cc <= args.maxcc and sunEl >= args.minsunel and proclevel in proclevels: # Only run this for scenes that aren't present on disk or if we choose to ignore local copies.
+        if (not sceneID[:16] in localscenelist or args.ignorelocal) and cc <= maxcc and sunEl >= args.minsunel and proclevel in proclevels: # Only run this for scenes that aren't present on disk or if we choose to ignore local copies.
         # if (feature.GetField("LEDAPS") == None or args.ignorelocal) and feature.GetField("CCFull") <= args.maxcc and feature.GetField("sunEl") >= args.minsunel:
             # sceneID = feature.GetField("sceneID")
             if args.landsat:
@@ -203,22 +221,22 @@ def populatelists(l8, l47, scenedata, localscenelist):
                     startyear = args.startyear
                 if year < startyear or year > endyear:
                     continue
-            if args.startdoy and args.enddoy:
-                if startdoy < enddoy:
-                    if doy < startdoy or doy > enddoy:
+            if args.startdoy and args.enddoy: # This might be programmed later to restrict dates to specific dates/ times of year
+                if args.startdoy < args.enddoy:
+                    if doy < args.startdoy or doy > args.enddoy:
                         continue
                 else:
                     if args.startyear: 
-                        if year == startyear and doy < startdoy:
+                        if year == startyear and doy < args.startdoy:
                             continue
                     if args.endyear:
-                        if year == endyear and doy > enddoy:
+                        if year == endyear and doy > args.enddoy:
                             continue
                     if doy > endday and doy < startday:
                         continue
             
             if args.startdate or args.enddate:
-                acqdate = datetime.datetime.strptime(feature.GetField("acqDate"),'%Y/%m/%d')
+                acqdate = datetime.datetime.strptime(acqDate,'%Y/%m/%d')
                 if args.startdate:
                     if startdate > acqdate:
                         continue
@@ -228,18 +246,18 @@ def populatelists(l8, l47, scenedata, localscenelist):
             
             # cc = feature.GetField("CCFull")
             
-            print('Scene %s, cloud cover of %s percent, added to list.'%(sceneID,cc))
+            print('Scene {}, cloud cover of {} percent, added to list.'.format(sceneID, cc))
             if not sceneID[9:16] in L7exclude and not sceneID[2:3] == '8': #(scenesensor == 'LANDSAT_TM' or scenesensor == 'LANDSAT_ETM' or 'LANDSAT_ETM_SLC_OFF') and 
                 if not sceneID[9:16] in l47.keys():
                     l47[sceneID[9:16]] = [sceneID]
                 elif not sceneID in l47[sceneID[9:16]]:
                     l47[sceneID[9:16]].append(sceneID)
                 if args.allinpath:
-                    sc = scenesearch(scenedata, sceneID)
+                    sc = scenesearch(scenedata, sceneID, pathrowdict)
                     if len(sc) > 0:
                         for s in sc:
                             if not s in l47[sceneID[9:16]]:
-                                print('Also adding scene %s to the processing list.'%sceneID)
+                                print('Also adding scene {} to the processing list.'.format(sceneID))
                                 l47[sceneID[9:16]].append(s)
                 
     #        elif scenesensor=='LANDSAT_ETM':
@@ -252,11 +270,11 @@ def populatelists(l8, l47, scenedata, localscenelist):
                 elif not sceneID in l8[sceneID[9:16]]:
                     l8[sceneID[9:16]].append(sceneID)
                 if args.allinpath:
-                    sc = scenesearch(scenedata, sceneID)
+                    sc = scenesearch(scenedata, sceneID, pathrowdict)
                     if len(sc) > 0:
                         for s in sc:
                             if not s in l8[sceneID[9:16]]:
-                                print('Also adding scene %s to the processing list.'%sceneID)
+                                print('Also adding scene {} to the processing list.'.format(sceneID))
                                 l8[sceneID[9:16]].append(s)
     return l8,l47
 
@@ -264,22 +282,38 @@ def populatelists(l8, l47, scenedata, localscenelist):
 
 L8exclude = []
 for i in range(21):
-    L8exclude.append('2015%03d'%(30 + i))
+    L8exclude.append('2015{:03d}'.format(30 + i))
 for i in range(9):
-    L8exclude.append('2016%03d'%(50 + i))
+    L8exclude.append('2016{:03d}'.format(50 + i))
 
 L7exclude = []
 for i in range(15):
-    L7exclude.append('2016%03d'%(151 + i))
-
+    L7exclude.append('2016{:03d}'.format(151 + i))
+L7exclude.append('2017074')
+L7exclude.append('2017075')
+L7exclude.append('2017076')
 # Set various other variables
 
-
-print('Opening %s'%infile)
-if args.path and args.row:
-    print('Searching for scenes from WRS-2 Path %d, Row %d, with a maximum cloud cover of %0.1f%%.'%(args.path, args.row, args.maxcc))
+pathrowdict = {}
 driver = ogr.GetDriverByName("ESRI Shapefile")
-dataSource = driver.Open(infile,0)
+dataSource = driver.Open(ieo.WRS2, 0)
+layer = dataSource.GetLayer()
+for feature in layer:
+    path = feature.GetField('Path')
+    row = feature.GetField('Row')
+    if not path in pathrowdict.keys():
+        pathrowdict[path] = []
+    if not row in pathrowdict[path]:
+        pathrowdict[path].append(row)
+dataSource = None
+for key in pathrowdict.keys():
+    pathrowdict[key].sort()
+
+print('Opening {}'.format(infile))
+if args.path and args.row:
+    print('Searching for scenes from WRS-2 Path {}, Row {}, with a maximum cloud cover of {:0.1f}%.'.format(args.path, args.row, args.maxcc))
+driver = ogr.GetDriverByName("ESRI Shapefile")
+dataSource = driver.Open(infile, 0)
 layer = dataSource.GetLayer()
 layer_defn = layer.GetLayerDefn()
 field_names = [layer_defn.GetFieldDefn(i).GetName() for i in range(layer_defn.GetFieldCount())]
@@ -299,45 +333,45 @@ if args.allinpath:
 
 
 if args.separate:
-    if len(l8.keys())>0:
+    if len(l8.keys()) > 0:
         i = 0
-        outfile = os.path.join(outdir,'LEDAPS_L8_list%s.txt'%todaystr)
-        print('Writing output to: %s'%outfile)
+        outfile = os.path.join(outdir, 'LEDAPS_L8_list{}.txt'.format(todaystr))
+        print('Writing output to: {}'.format(outfile))
         keylist = list(l8.keys())
         keylist.sort()
-        with open(outfile,'w') as output:
+        with open(outfile, 'w') as output:
             for key in keylist:
                 for scene in l8[key]:
-                    if scene.startswith('LC8'): # Excludes Landsat 8 scenes that do not contain both OLI and TIRS data 
-                        output.write('%s\n'%scene)
+                    if key.startswith('LC8'): # Excludes Landsat 8 scenes that do not contain both OLI and TIRS data 
+                        output.write('{}\n'.format(scenedata[scene]['LandsatPID']))
                         i += 1
         print('{} scenes for ESPA to process.'.format(i))
     
-    if len(l47.keys())>0:
+    if len(l47.keys()) > 0:
         i = 0
-        outfile = os.path.join(outdir,'LEDAPS_L47_list%s.txt'%todaystr)
-        print('Writing output to: %s'%outfile)
+        outfile = os.path.join(outdir,'LEDAPS_L47_list{}.txt'.format(todaystr))
+        print('Writing output to: {}'.format(outfile))
         keylist = list(l47.keys())
         keylist.sort()
-        with open(outfile,'w') as output:
+        with open(outfile, 'w') as output:
             for key in keylist:
                 for scene in l47[key]:
                     if key[2:3] != '8':
-                        output.write('%s\n'%scene)
+                        output.write('{}\n'.format(scenedata[scene]['LandsatPID']))
                         i += 1
         print('{} scenes for ESPA to process.'.format(i))
 else:
     i = 0
-    outfile = os.path.join(outdir,'LEDAPS_list%s.txt'%todaystr)
-    print('Writing output to: %s'%outfile)
-    with open(outfile,'w') as output:
+    outfile = os.path.join(outdir,'LEDAPS_list{}.txt'.format(todaystr))
+    print('Writing output to: {}'.format(outfile))
+    with open(outfile, 'w') as output:
         for d in [l47, l8]:
             if len(d.keys()) > 0:
                 keylist = list(d.keys())
                 keylist.sort()
                 for key in keylist:
                     for scene in d[key]:
-                        output.write('%s\n'%scene)
+                        output.write('{}\n'.format(scenedata[scene]['LandsatPID']))
                         i += 1
     print('{} scenes for ESPA to process.'.format(i))
                 
