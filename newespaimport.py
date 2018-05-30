@@ -3,10 +3,10 @@
 # Johnstown Castle, Co. Wexford Y35 TC97, Ireland
 # email: guy <dot> serbin <at> teagasc <dot> ie
 
-# version 1.1.1
+# version 1.1.2
 
 # This script does the following:
-# 1. Extracts LEDAPS-processed Landsat imagery data from tar.gz files
+# 1. Extracts ESPA-processed Landsat imagery data from tar.gz files
 # 2. Virtually stacks surface reflectance (SR) and brightness temperature (BT) bands. 
 # 3. Converts SR, BT, and Fmask data from UTM to the local projection.
 # 4. Calculates NDVI and EVI for clear land pixels
@@ -16,7 +16,7 @@ import os, sys, glob, datetime, shutil, argparse, ieo
 from osgeo import ogr
 
 ## main
-parser = argparse.ArgumentParser('This script imports LEDAPS-processed scenes into the local library. It stacks images and converts them to the locally defined projection in IEO, and adds ENVI metadata.')
+parser = argparse.ArgumentParser('This script imports ESPA-processed scenes into the local library. It stacks images and converts them to the locally defined projection in IEO, and adds ENVI metadata.')
 parser.add_argument('-i','--indir', default = ieo.ingestdir, type = str, help = 'Input directory to search for files. This will be overridden if --infile is set.')
 parser.add_argument('-if','--infile', type = str, help = 'Input file. This must be contain the full path and filename.')
 parser.add_argument('-f','--fmaskdir', type = str, default = ieo.fmaskdir, help = 'Directory containing FMask cloud masks in local projection.')
@@ -66,13 +66,13 @@ def sceneidfromfilename(filename):
     return sceneid
 
 
-# Open up ieo.landsatshp and get the existing Product ID, Scene ID, and LEDAPS status
+# Open up ieo.landsatshp and get the existing Product ID, Scene ID, and SR_path status
 driver = ogr.GetDriverByName("ESRI Shapefile")
 data_source = driver.Open(ieo.landsatshp, 0)
 layer = data_source.GetLayer()
 for feature in layer:
     sceneID = feature.GetField('sceneID')
-    scenedict[sceneID] = {'ProductID' : feature.GetField('LandsatPID'), 'sceneID' : sceneID, 'LEDAPS' : feature.GetField('LEDAPS')}
+    scenedict[sceneID] = {'ProductID' : feature.GetField('LandsatPID'), 'sceneID' : sceneID, 'SR_path' : feature.GetField('SR_path')}
 data_source = None
 
 # This look finds any existing processed data 
