@@ -3,7 +3,7 @@
 # Johnstown Castle, Co. Wexford Y35 TC97, Ireland
 # email: guy <dot> serbin <at> teagasc <dot> ie
 
-# version 1.1.1
+# version 1.1.2
 
 # This script creates Landsat scene processing lists for USGS/EROS/ESPA (https://espa.cr.usgs.gov)
 
@@ -13,7 +13,7 @@ from osgeo import ogr, osr
 global proclevels, pathrowdict
 
 # Parse command line arguments
-parser = argparse.ArgumentParser('Create ESPA LEDAPS process list for missing scenes.')
+parser = argparse.ArgumentParser('Create ESPA LEDAPS/ LaSRC process list for missing scenes.')
 parser.add_argument('--path', type = int, help = 'WRS-2 Path')
 parser.add_argument('--row', type = int, help = 'WRS-2 Row. If this is specified, then --path must also be specified.')
 parser.add_argument('--maxcc', default = 100, type = int, help = 'Maximum cloud cover in percent')
@@ -28,7 +28,7 @@ parser.add_argument('--endyear', type = int, help = 'Ending year. If less than s
 parser.add_argument('--landsat', type = int, help = 'Landsat number (4, 5, 7, or 8 only).')
 parser.add_argument('--sensor', type = str, help = 'Landsat sensor: TM, ETM, ETM_SLC_OFF, OLI, OLI_TIRS, TIRS')
 parser.add_argument('--shp', type = str, default = ieo.landsatshp, help = 'Full path and filename of alternative shapefile.')
-parser.add_argument('-o', '--outdir', type = str, default = os.path.join(ieo.catdir, 'Landsat', 'LEDAPS_processing_lists'), help = 'Output directory')
+parser.add_argument('-o', '--outdir', type = str, default = os.path.join(ieo.catdir, 'Landsat', 'ESPA_processing_lists'), help = 'Output directory')
 parser.add_argument('--ignorelocal', type = bool, default = False, help = 'Ignore presence of local scenes.')
 parser.add_argument('--srdir', type = str, default = ieo.srdir, help = 'Local SR scene directory')
 parser.add_argument('--usesrdir', type = bool, default = True, help = 'Use local index of scenes rather than shapefile stored data')
@@ -110,7 +110,7 @@ def getscenedata(layer, localscenelist):
         if sceneID[2:3] == '7' and datestr in L7exclude:
             includescene = False
         if includescene and sunEl >= args.minsunel:
-            LEDAPS = feature.GetField("LEDAPS")
+            SR_file = feature.GetField("SR_path")
             scenedata[sceneID] = {'LandsatPID': ProductID,
                                     'acqDate':acqDate, 
                                     'Path': feature.GetField("path"), 
@@ -119,11 +119,11 @@ def getscenedata(layer, localscenelist):
                                     'CCFull': feature.GetField("CCFull"), 
                                     'CCLand': feature.GetField("CCLand"),
                                     'sunEl': sunEl, 
-                                    'LEDAPS': LEDAPS, 
+                                    'SR_path': SR_file, 
                                     'proclevel': proclevel}
-            if LEDAPS and not args.usesrdir:
-                if os.path.isfile(LEDAPS):
-                    localscenelist.append(os.path.basename(LEDAPS)[:16])
+            if SR_file and not args.usesrdir:
+                if os.path.isfile(SR_file):
+                    localscenelist.append(os.path.basename(SR_file)[:16])
     return scenedata, localscenelist
 
 def scenesearch(scenedata, sceneID, pathrowdict): # This function is still Ireland specific
@@ -134,8 +134,8 @@ def scenesearch(scenedata, sceneID, pathrowdict): # This function is still Irela
 #        r = 21
 #    else:
 #        r = 22
-    if scenedata[sceneID]['LEDAPS']:
-        if os.path.exists(scenedata[sceneID]['LEDAPS']):
+    if scenedata[sceneID]['SR_path']:
+        if os.path.exists(scenedata[sceneID]['SR_path']):
             while r <= max(pathrowdict[scenedata[sceneID]['Path']]):
                 if r != scenedata[sceneID]['Row']:
                     s = '{}{:03d}{}'.format(sceneID[:6], r, sceneID[9:16])
@@ -187,11 +187,11 @@ def populatelists(l8, l47, scenedata, localscenelist):
             cc = scenedata[sceneID]['CCFull']
             maxcc = args.maxcc
         sunEl = scenedata[sceneID]['sunEl']
-        SR = scenedata[sceneID]['LEDAPS']
+        SR = scenedata[sceneID]['SR_path']
         proclevel = scenedata[sceneID]['proclevel']
         
         if (not sceneID[:16] in localscenelist or args.ignorelocal) and cc <= maxcc and sunEl >= args.minsunel and proclevel in proclevels: # Only run this for scenes that aren't present on disk or if we choose to ignore local copies.
-        # if (feature.GetField("LEDAPS") == None or args.ignorelocal) and feature.GetField("CCFull") <= args.maxcc and feature.GetField("sunEl") >= args.minsunel:
+        # if (feature.GetField("SR_path") == None or args.ignorelocal) and feature.GetField("CCFull") <= args.maxcc and feature.GetField("sunEl") >= args.minsunel:
             # sceneID = feature.GetField("sceneID")
             if args.landsat:
                 if args.landsat != int(sceneID[2:3]):
@@ -335,7 +335,7 @@ if args.allinpath:
 if args.separate:
     if len(l8.keys()) > 0:
         i = 0
-        outfile = os.path.join(outdir, 'LEDAPS_L8_list{}.txt'.format(todaystr))
+        outfile = os.path.join(outdir, 'ESPA_L8_list{}.txt'.format(todaystr))
         print('Writing output to: {}'.format(outfile))
         keylist = list(l8.keys())
         keylist.sort()
@@ -349,7 +349,7 @@ if args.separate:
     
     if len(l47.keys()) > 0:
         i = 0
-        outfile = os.path.join(outdir,'LEDAPS_L47_list{}.txt'.format(todaystr))
+        outfile = os.path.join(outdir,'ESPA_L47_list{}.txt'.format(todaystr))
         print('Writing output to: {}'.format(outfile))
         keylist = list(l47.keys())
         keylist.sort()
@@ -362,7 +362,7 @@ if args.separate:
         print('{} scenes for ESPA to process.'.format(i))
 else:
     i = 0
-    outfile = os.path.join(outdir,'LEDAPS_list{}.txt'.format(todaystr))
+    outfile = os.path.join(outdir,'ESPA_list{}.txt'.format(todaystr))
     print('Writing output to: {}'.format(outfile))
     with open(outfile, 'w') as output:
         for d in [l47, l8]:
