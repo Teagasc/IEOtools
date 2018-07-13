@@ -102,8 +102,9 @@ if useWRS2.lower() == 'yes':
 #   gdb, wrs = os.path.split(ieo.WRS2)
     print('Getting WRS-2 Path/Row combinations from shapefile: {}'.format(ieo.WRS2))
     driver = ogr.GetDriverByName("ESRI Shapefile")
+    print('WRS-2 = {}'.format(ieo.WRS2))
     ds = driver.Open(ieo.WRS2, 0)
-    layer = ds.Getlayer()
+    layer = ds.GetLayer()
     for feature in layer:
         path = feature.GetField('PATH')
         if not path in paths:
@@ -111,7 +112,7 @@ if useWRS2.lower() == 'yes':
         row = feature.GetField('ROW')
         if not row in rows:
             rows.append(row)
-        pathrowstrs.append('{03d}{:03d}'.format(path, row))    
+        pathrowstrs.append('{:03d}{:03d}'.format(path, row))    
 #            pathrows.append([path, path, row, row])
     ds = None
 else:
@@ -173,7 +174,7 @@ def getapiKey():
     URL = '{}{}/login'.format(args.baseURL, args.version)
     print('Logging in to: {}'.format(URL))
     data = json.dumps({'username': args.username, 'password': args.password, 'catalog_ID': args.catalogID})
-    response = requests.post(URL, data = {'jsonRequest':data}) # , verify = False) # 
+    response = requests.post(URL, data = {'jsonRequest':data}) # 
     json_data = json.loads(response.text)
     apiKey = json_data['data']
     return apiKey
@@ -188,7 +189,7 @@ def getMBR():
         print('Requesting coordinates for WRS-2 Path {} Row {}.'.format(pr[0], pr[1]))
         jsonRequest = json.dumps({"gridType" : "WRS2", "responseShape" : "point", "path" : str(pr[0]), "row" : str(pr[1])}).replace(' ','')
         requestURL = '{}?jsonRequest={}'.format(URL, jsonRequest)
-        response = requests.post(requestURL) # , verify = False) # URL, data = {'jsonRequest': jsonRequest}
+        response = requests.post(requestURL) # URL, data = {'jsonRequest': jsonRequest}
         json_data = json.loads(response.text)
         Xcoords.append(float(json_data["data"]["coordinates"][0]["longitude"]))
         Ycoords.append(float(json_data["data"]["coordinates"][0]["latitude"]))
@@ -198,7 +199,7 @@ def scenesearch(apiKey, scenelist):
     # This searches the USGS archive for scene metadata, and checks it against local metadata. New scenes will be queried for metadata.
     RequestURL = '{}{}/search'.format(args.baseURL, args.version)
     QueryURL = '{}{}/metadata'.format(args.baseURL, args.version)
-    datasetNames = ['LANDSAT_8_C1']#, 'LANDSAT_ETM_C1', 'LANDSAT_TM_C1']
+    datasetNames = ['LANDSAT_8_C1', 'LANDSAT_ETM_C1', 'LANDSAT_TM_C1']
     scenedict = {}
     js = {'LL': 0, 'UL': 1, 'UR': 2, 'LR': 3}
     for datasetName in datasetNames:
@@ -216,7 +217,7 @@ def scenesearch(apiKey, scenelist):
                         "maxCloudCover": 100,
                         "maxResults": args.maxResults,
                         "sortOrder": "ASC"})
-        response = requests.post(RequestURL, data = {'jsonRequest': searchparams}) # , verify = False)
+        response = requests.post(RequestURL, data = {'jsonRequest': searchparams})
         json_data = json.loads(response.text)
         querylist = []
         for i in range(len(json_data['data']['results'])):
@@ -238,7 +239,7 @@ def scenesearch(apiKey, scenelist):
             print('{} new scenes have been found, querying metadata.'.format(len(querylist)))
             iterations = math.ceil(len(querylist) / 100) # break up queries into blocks of 100 or less scenes
             total = 0
-            iterations = 1 # temporary limitation
+            #iterations = 1 # temporary limitation
             for iteration in range(iterations):
                 startval = iteration * 100
                 if iteration * 100 > len(querylist):
@@ -255,11 +256,11 @@ def scenesearch(apiKey, scenelist):
                 queryparams = json.dumps({"apiKey":apiKey,
                             "datasetName":datasetName,
                             'entityIds': querystr})
-                query = requests.post(QueryURL, data = {'jsonRequest':queryparams}) # , verify = False)
-                if endval == 99:
-                    outfile = r'd:\data\ieo\firstquery.txt'
-                    with open(outfile, 'w') as output:
-                        output.write(query.text)
+                query = requests.post(QueryURL, data = {'jsonRequest':queryparams})
+#                if endval == 99:
+#                    outfile = r'd:\data\ieo\firstquery.txt'
+#                    with open(outfile, 'w') as output:
+#                        output.write(query.text)
                 querydict = json.loads(query.text)
                 if len(querydict['data']) > 0:
                     for item in querydict['data']:
@@ -735,7 +736,9 @@ if len(sceneIDs) > 0:
 #                    if root[i][k].tag[j:] in headervals:
 #                        m = tags.index(root[i][k].tag[j:])
 #                        feature.SetField(root[i][k].tag[j:], root[i][k].text)
+        feature.SetField('sceneID', sceneID)
         for key in scenedict[sceneID].keys():
+            
 #            print('key = {}, type = {}, value = '.format(key, type(scenedict[sceneID][key])))
 #            print(scenedict[sceneID][key])
             if (scenedict[sceneID][key]) and key in queryfieldnames:
@@ -788,6 +791,7 @@ if len(sceneIDs) > 0:
         poly.Transform(transform)   # Convert to local projection
         feature.SetGeometry(poly)  
         layer.CreateFeature(feature)
+        feature.Destroy()
         print('\n')
         filenum += 1
 
