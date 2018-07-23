@@ -7,8 +7,20 @@
 
 # This script creates Landsat scene processing lists for USGS/EROS/ESPA (https://espa.cr.usgs.gov)
 
-import os, sys, glob, datetime, argparse, ieo
+import os, sys, glob, datetime, argparse #, ieo
 from osgeo import ogr, osr
+
+try: # This is included as the module may not properly install in Anaconda.
+    import ieo
+except:
+    print('Error: IEO failed to load. Please input the location of the directory containing the IEO installation files.')
+    ieodir = input('IEO installation path: ')
+    if os.path.isfile(os.path.join(ieodir, 'ieo.py')):
+        sys.path.append(r'D:\Data\IEO\ieo')
+        import ieo
+    else:
+        print('Error: that is not a valid path for the IEO module. Exiting.')
+        sys.exit()
 
 global proclevels, pathrowdict
 
@@ -19,8 +31,8 @@ parser.add_argument('--row', type = int, help = 'WRS-2 Row. If this is specified
 parser.add_argument('--maxcc', default = 100, type = int, help = 'Maximum cloud cover in percent')
 parser.add_argument('--maxccland', default = 30, type = int, help = 'Maximum cloud cover over land in percent')
 parser.add_argument('--ccland', default = True, type = bool, help = 'Use land cloud cover, not full scene (Default = True)')
-parser.add_argument('--startdate', type = str, help = 'Starting date, DD/MM/YYYY')
-parser.add_argument('--enddate', type = str, help = 'Ending date, DD/MM/YYYY')
+parser.add_argument('--startdate', type = str, default = '1982/01/01', help = 'Starting date, YYYY/MM/DD')
+parser.add_argument('--enddate', type = str, default = None, help = 'Ending date, YYYY/MM/DD')
 parser.add_argument('--startdoy', type = int, help = 'Starting day of year, 1-366')
 parser.add_argument('--enddoy', type = int, help = 'Ending day of year, 1-366. If less than starting day of year then this will be used to span the new year.')
 parser.add_argument('--startyear', type = int, help = 'Starting year')
@@ -39,6 +51,13 @@ parser.add_argument('--L1GS', type = bool, default = False, help = 'Also get L1G
 parser.add_argument('--L1GT', type = bool, default = False, help = 'Also get L1GT scenes but exclude L1GS.')
 parser.add_argument('--ALL', type = bool, default = False, help = 'Get any scene regardless of processing level.')
 args = parser.parse_args()
+
+# type conversions of start and end dates to datetime.datetime objects
+args.startdate = datetime.datetime.strptime(args.startdate,'%Y/%m/%d')
+if args.enddate:
+    args.enddate = datetime.datetime.strptime(args.enddate,'%Y/%m/%d')
+else:
+    args.enddate = datetime.datetime.today()
 
 outdir = args.outdir
 infile = args.shp
@@ -72,11 +91,6 @@ if args.startdoy or args.enddoy:
         print('Error: if used, both --startdoy and --enddoy must be defined. Exiting.')
         exit()
     
-if args.startdate:
-    startdate = datetime.datetime.strptime(args.startdate,'%Y/%m/%d')
-if args.enddate:
-    enddate = datetime.datetime.strptime(args.enddate,'%Y/%m/%d')
-
 if args.usesrdir:
     dirs = [args.srdir, os.path.join(args.srdir,'L1G')]
     for d in dirs:
@@ -101,29 +115,38 @@ def getscenedata(layer, localscenelist):
         ProductID = feature.GetField("LandsatPID")
         includescene = True
         sunEl = feature.GetField("sunEl")
-        sensor = feature.GetField("sensor")
-        acqDate = datetime.datetime.strptime(feature.GetField("acqDate"), '%Y/%m/%d')
-        datestr = acqDate.strftime('%Y%j')
+        sensor = feature.GetField("SensorID")
+        acqDateval = feature.GetField("acqDate")
+        try:
+            acqDate = datetime.datetime.strptime(acqDateval, '%Y/%m/%d')
+            datestr = acqDate.strftime('%Y%j')
+        except:
+            print('Error: "acqDate" field missing acquisition date data, attempting to correct.')
+            ieo.logerror(sceneID, '"acqDate" field missing acquisition date data, attempting to correct.')
+            datestr = sceneID[9:16]
+            acqDate = datetime.datetime.strptime(datestr, '%Y%j')
+#            feature.SetField('acqDate', acqDate)
         proclevel = feature.GetField("DT_L1")
         if sceneID[2:3] == '8' and ((datestr in L8exclude) or (sensor != 'OLI_TIRS')):
             includescene = False
         if sceneID[2:3] == '7' and datestr in L7exclude:
             includescene = False
-        if includescene and sunEl >= args.minsunel:
-            SR_file = feature.GetField("SR_path")
-            scenedata[sceneID] = {'LandsatPID': ProductID,
-                                    'acqDate':acqDate, 
-                                    'Path': feature.GetField("path"), 
-                                    'Row': feature.GetField("row"), 
-                                    'Sensor': sensor,  
-                                    'CCFull': feature.GetField("CCFull"), 
-                                    'CCLand': feature.GetField("CCLand"),
-                                    'sunEl': sunEl, 
-                                    'SR_path': SR_file, 
-                                    'proclevel': proclevel}
-            if SR_file and not args.usesrdir:
-                if os.path.isfile(SR_file):
-                    localscenelist.append(os.path.basename(SR_file)[:16])
+        if sunEl: # ignore Null values
+            if includescene and sunEl >= args.minsunel:
+                SR_file = feature.GetField("SR_path")
+                scenedata[sceneID] = {'LandsatPID': ProductID,
+                                        'acqDate':acqDate, 
+                                        'Path': feature.GetField("path"), 
+                                        'Row': feature.GetField("row"), 
+                                        'Sensor': sensor,  
+                                        'CCFull': feature.GetField("CCFull"), 
+                                        'CCLand': feature.GetField("CCLand"),
+                                        'sunEl': sunEl, 
+                                        'SR_path': SR_file, 
+                                        'proclevel': proclevel}
+                if SR_file and not args.usesrdir:
+                    if os.path.isfile(SR_file):
+                        localscenelist.append(os.path.basename(SR_file)[:16])
     return scenedata, localscenelist
 
 def scenesearch(scenedata, sceneID, pathrowdict): # This function is still Ireland specific
@@ -190,92 +213,87 @@ def populatelists(l8, l47, scenedata, localscenelist):
         SR = scenedata[sceneID]['SR_path']
         proclevel = scenedata[sceneID]['proclevel']
         
-        if (not sceneID[:16] in localscenelist or args.ignorelocal) and cc <= maxcc and sunEl >= args.minsunel and proclevel in proclevels: # Only run this for scenes that aren't present on disk or if we choose to ignore local copies.
-        # if (feature.GetField("SR_path") == None or args.ignorelocal) and feature.GetField("CCFull") <= args.maxcc and feature.GetField("sunEl") >= args.minsunel:
-            # sceneID = feature.GetField("sceneID")
-            if args.landsat:
-                if args.landsat != int(sceneID[2:3]):
-                    continue
-            if args.path:
-                if args.path != path:
-                    continue
-                # else:
-                #     print(path)
-            if args.row:
-                if args.row != row:
-                    continue
-                # else:
-                #     print(row)
-            if args.sensor: 
-                if sensor != scenesensor:
-                    continue
-            
-            year = int(sceneID[9:13])
-            doy = int(sceneID[13:16])    
-            if args.startyear or args.endyear:
-                if args.startyear > args.endyear:
-                    endyear = args.startyear
-                    startyear = args.endyear
-                else: 
-                    endyear = args.endyear
-                    startyear = args.startyear
-                if year < startyear or year > endyear:
-                    continue
-            if args.startdoy and args.enddoy: # This might be programmed later to restrict dates to specific dates/ times of year
-                if args.startdoy < args.enddoy:
-                    if doy < args.startdoy or doy > args.enddoy:
+        try:
+            if (not sceneID[:16] in localscenelist or args.ignorelocal) and cc <= maxcc and sunEl >= args.minsunel and proclevel in proclevels: # Only run this for scenes that aren't present on disk or if we choose to ignore local copies.
+            # if (feature.GetField("SR_path") == None or args.ignorelocal) and feature.GetField("CCFull") <= args.maxcc and feature.GetField("sunEl") >= args.minsunel:
+                # sceneID = feature.GetField("sceneID")
+                if args.landsat:
+                    if args.landsat != int(sceneID[2:3]):
                         continue
-                else:
-                    if args.startyear: 
-                        if year == startyear and doy < args.startdoy:
-                            continue
-                    if args.endyear:
-                        if year == endyear and doy > args.enddoy:
-                            continue
-                    if doy > endday and doy < startday:
+                if args.path:
+                    if args.path != path:
                         continue
-            
-            if args.startdate or args.enddate:
-                acqdate = datetime.datetime.strptime(acqDate,'%Y/%m/%d')
-                if args.startdate:
-                    if startdate > acqdate:
+                    # else:
+                    #     print(path)
+                if args.row:
+                    if args.row != row:
                         continue
-                if args.enddate:
-                    if enddate < acqdate:
+                    # else:
+                    #     print(row)
+                if args.sensor: 
+                    if sensor != scenesensor:
                         continue
-            
-            # cc = feature.GetField("CCFull")
-            
-            print('Scene {}, cloud cover of {} percent, added to list.'.format(sceneID, cc))
-            if not sceneID[9:16] in L7exclude and not sceneID[2:3] == '8': #(scenesensor == 'LANDSAT_TM' or scenesensor == 'LANDSAT_ETM' or 'LANDSAT_ETM_SLC_OFF') and 
-                if not sceneID[9:16] in l47.keys():
-                    l47[sceneID[9:16]] = [sceneID]
-                elif not sceneID in l47[sceneID[9:16]]:
-                    l47[sceneID[9:16]].append(sceneID)
-                if args.allinpath:
-                    sc = scenesearch(scenedata, sceneID, pathrowdict)
-                    if len(sc) > 0:
-                        for s in sc:
-                            if not s in l47[sceneID[9:16]]:
-                                print('Also adding scene {} to the processing list.'.format(sceneID))
-                                l47[sceneID[9:16]].append(s)
                 
-    #        elif scenesensor=='LANDSAT_ETM':
-    #            l7.append(sceneID)
-    #        elif scenesensor=='LANDSAT_ETM_SLC_OFF' and not sceneID[9:16] in L7exclude:
-    #            l7slcoff.append(sceneID)
-            elif sceneID[2:3] == '8' and not sceneID[9:16] in L8exclude:
-                if not sceneID[9:16] in l8.keys():
-                    l8[sceneID[9:16]] = [sceneID]
-                elif not sceneID in l8[sceneID[9:16]]:
-                    l8[sceneID[9:16]].append(sceneID)
-                if args.allinpath:
-                    sc = scenesearch(scenedata, sceneID, pathrowdict)
-                    if len(sc) > 0:
-                        for s in sc:
-                            if not s in l8[sceneID[9:16]]:
-                                print('Also adding scene {} to the processing list.'.format(sceneID))
-                                l8[sceneID[9:16]].append(s)
+                year = int(sceneID[9:13])
+                doy = int(sceneID[13:16])    
+                if args.startyear or args.endyear:
+                    if args.startyear > args.endyear:
+                        endyear = args.startyear
+                        startyear = args.endyear
+                    else: 
+                        endyear = args.endyear
+                        startyear = args.startyear
+                    if year < startyear or year > endyear:
+                        continue
+                if args.startdoy and args.enddoy: # This might be programmed later to restrict dates to specific dates/ times of year
+                    if args.startdoy < args.enddoy:
+                        if doy < args.startdoy or doy > args.enddoy:
+                            continue
+                    else:
+                        if args.startyear: 
+                            if year == startyear and doy < args.startdoy:
+                                continue
+                        if args.endyear:
+                            if year == endyear and doy > args.enddoy:
+                                continue
+                        if doy > endday and doy < startday:
+                            continue
+                
+                if acqDate >= args.startdate and acqDate <= args.enddate:
+    #               
+                    print('Scene {}, cloud cover of {} percent, added to list.'.format(sceneID, cc))
+                    if not sceneID[9:16] in L7exclude and not sceneID[2:3] == '8': #(scenesensor == 'LANDSAT_TM' or scenesensor == 'LANDSAT_ETM' or 'LANDSAT_ETM_SLC_OFF') and 
+                        if not sceneID[9:16] in l47.keys():
+                            l47[sceneID[9:16]] = [sceneID]
+                        elif not sceneID in l47[sceneID[9:16]]:
+                            l47[sceneID[9:16]].append(sceneID)
+                        if args.allinpath:
+                            sc = scenesearch(scenedata, sceneID, pathrowdict)
+                            if len(sc) > 0:
+                                for s in sc:
+                                    if not s in l47[sceneID[9:16]]:
+                                        print('Also adding scene {} to the processing list.'.format(sceneID))
+                                        l47[sceneID[9:16]].append(s)
+                        
+            #        elif scenesensor=='LANDSAT_ETM':
+            #            l7.append(sceneID)
+            #        elif scenesensor=='LANDSAT_ETM_SLC_OFF' and not sceneID[9:16] in L7exclude:
+            #            l7slcoff.append(sceneID)
+                    elif sceneID[2:3] == '8' and not sceneID[9:16] in L8exclude:
+                        if not sceneID[9:16] in l8.keys():
+                            l8[sceneID[9:16]] = [sceneID]
+                        elif not sceneID in l8[sceneID[9:16]]:
+                            l8[sceneID[9:16]].append(sceneID)
+                        if args.allinpath:
+                            sc = scenesearch(scenedata, sceneID, pathrowdict)
+                            if len(sc) > 0:
+                                for s in sc:
+                                    if not s in l8[sceneID[9:16]]:
+                                        print('Also adding scene {} to the processing list.'.format(sceneID))
+                                        l8[sceneID[9:16]].append(s)
+        except Exception as e:
+            print('Error: {}'.format(e))
+            ieo.logerror(sceneID, e)
     return l8,l47
 
 # Exclusion of problematic dates:

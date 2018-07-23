@@ -12,8 +12,20 @@
 # 4. Calculates NDVI and EVI for clear land pixels
 # 5. Archives tar.gz files after use
 
-import os, sys, glob, datetime, shutil, argparse, ieo
+import os, sys, glob, datetime, shutil, argparse#, ieo
 from osgeo import ogr
+
+try: # This is included as the module may not properly install in Anaconda.
+    import ieo
+except:
+    print('Error: IEO failed to load. Please input the location of the directory containing the IEO installation files.')
+    ieodir = input('IEO installation path: ')
+    if os.path.isfile(os.path.join(ieodir, 'ieo.py')):
+        sys.path.append(r'D:\Data\IEO\ieo')
+        import ieo
+    else:
+        print('Error: that is not a valid path for the IEO module. Exiting.')
+        sys.exit()
 
 ## main
 parser = argparse.ArgumentParser('This script imports ESPA-processed scenes into the local library. It stacks images and converts them to the locally defined projection in IEO, and adds ENVI metadata.')
